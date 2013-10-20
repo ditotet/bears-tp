@@ -176,7 +176,7 @@ if __name__ == "__main__":
         exit()
 
     port = 33122
-    debug = False
+    debug = True
     timeout = 10
 
     for o,a in opts:
