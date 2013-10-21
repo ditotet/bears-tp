@@ -2,6 +2,7 @@ import socket
 import getopt
 import sys
 import time
+import pdb
 
 import Checksum
 
@@ -31,7 +32,7 @@ class Connection():
 
         if self.debug:
             print "next seqno should be %d" % (self.current_seqno+1)
-
+        print(self.current_seqno+1, res_data)
         # note: we return the /next/ sequence number we're expecting
         return self.current_seqno+1, res_data
 
@@ -43,7 +44,7 @@ class Connection():
         self.outfile.close()
 
 class Receiver():
-    def __init__(self,listenport=33122,debug=False,timeout=10):
+    def __init__(self,listenport=33122,debug=False,timeout=100):
         self.debug = debug
         self.timeout = timeout
         self.last_cleanup = time.time()

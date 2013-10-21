@@ -1,6 +1,10 @@
 import sys
 import getopt
 import cStringIO
+import time
+import random
+import pdb
+import select
 
 import Checksum
 import BasicSender
@@ -12,47 +16,149 @@ class Sender(BasicSender.BasicSender):
     def __init__(self, dest, port, filename, debug=False):
         super(Sender, self).__init__(dest, port, filename, debug)
         self.max_data_size = 1372
+        self.windowsize = 3
+        self.timeout = 0.5
+        self.seqno = 0
+        self.wnd = []
 
     # Main sending loop.
     def start(self):
-        seqno = 0
-        msg_type = None
-        curr_seg = None
-        next_seg = None
-        while msg_type is not 'end':
-            msg = filename and self.infile or raw_input("message to send > ")
-            segments = self.segment_data(msg, self.max_data_size)
-            try:
-                curr_seg = segments.next() if not curr_seg else next_seg
-                next_seg = segments.next()
-            except StopIteration:
-                next_seg = False
+        """ Send a file or get input from stdin. Send all data
+        in order, reliably to receiver. """
+        end_transmission = False
+        while not end_transmission:
+            
+            end_transmission = self.handle_file(self.infile) \
+            if filename and self.infile else self.handle_stdin()
+                  
+    def handle_file(self, infile):
+        """ To send data from file included with -f flag in sysargs.
+        If data is fetched from stdin, it is converted to a file and
+        this function is called. """
 
+        # Initialize variables
+        windowsize = self.windowsize
+
+        # Initialize the generators that will yield the packets...
+        segments = self.segment_data(infile, self.max_data_size)
+        packets = self.get_packets(segments)
+
+        # To keep track of which packets get acked
+        acked = {}
+        for i in range(self.seqno, self.seqno + len(self.wnd)):
+            acked[i] = False
+
+        # Attempt to establish a connection...
+        start_packet = packets.next()
+        self.initiate_connection(start_packet)
+        acked[0] = True
+        # Connection established!
+
+        # Grab the first window of packets to send
+        self.get_window(packets, windowsize)
+
+        # Main sending/receiving loop
+        while True:
+
+            # Send the whole window
+            for packet in self.wnd:
+                self.send(packet)
+
+            # Wait to hear back from receiver. If receiver sends ack,
+            # set appropriate flag in acked to True
+            for packet in self.wnd:
+                response = self.receive(self.timeout)
+                if response:
+                    ackno = int(self.split_packet(response)[1])
+                    for j in range(0, ackno):
+                        acked[j] = True
+
+            # Delete in order acked packets from the window
+            # to make room for more packets to fill the buffer
+            for i in range(self.seqno, len(acked.keys())):
+                if acked[i]:
+                    self.wnd.pop(0)
+                    self.seqno += 1
+                else:
+                    break
+
+            # Refresh the window
+            self.get_window(packets, windowsize)
+            # pdb.set_trace()
+            if not self.wnd:
+                break
+
+        # Reset seqno and exit loop
+        self.seqno = 0
+        return True
+
+    def handle_stdin(self):
+        """ To send data that is input via stdin."""
+        msg = sys.stdin
+
+        # Check if stdin is empty, return 
+        if not select.select([msg,],[],[],0.0)[0]:
+            return True
+
+        # If stdin is not a file that can be read, coerce it to a StringIO object 
+        msg = cStringIO.StringIO(msg) if msg and not hasattr(msg, 'read') else msg
+
+        # Pass the buck to handle_file
+        self.handle_file(msg)
+
+        # Make sure to return True or we'll loop forever
+        return True
+
+    def initiate_connection(self, start_packet):
+        """ Send a start packet and wait to hear back from
+        receiver before sending more packets."""
+        while self.seqno == 0:
+            self.send(start_packet)
+            response = self.receive(self.timeout)
+            if response:
+                self.seqno += 1
+
+    def get_packets(self, segments, seqno=0):
+        """ Yield the packets, in order with appropriate 
+        flags for start, data, end. If all data fits in 
+        start packet, there is no data packet."""
+        msg_type = 'start'
+        seg_buffer = [segments.next(), segments.next()]
+        packet = self.make_packet(msg_type, seqno, seg_buffer.pop(0))
+        yield packet
+        seqno += 1
+        if seg_buffer[0] is not '':
+            seg_buffer.append(segments.next())
             msg_type = 'data'
-            if seqno == 0:
-                msg_type = 'start'
-            elif next_seg is None or curr_seg == 'done':
-                msg_type = 'end'
-
-            packet = self.make_packet(msg_type, seqno, curr_seg)
-            curr_seg = next_seg
-            print(packet)
-            seqno += 1
-
+            while seg_buffer[1] != '':
+                packet = self.make_packet(msg_type, seqno, seg_buffer.pop(0))
+                yield packet
+                seg_buffer.append(segments.next())
+                seqno += 1
+        msg_type = 'end'
+        packet = self.make_packet(msg_type, seqno, seg_buffer.pop(0))
+        yield packet
 
     def segment_data(self, msg, seg_size):
         """ 
         To deal with data larger than the max packet size,
-        we take in the original message, and yield segments
-        of size seg_size back to the calling function.
+        we take in the original message, and return a 
+        generator to yield segments of size seg_size.
         """
-        msg = cStringIO.StringIO(msg) if not hasattr(msg, 'read') else msg
-        while True:
+        segment = None
+        while segment is not '':
             segment = bytes(msg.read(seg_size))
-            if segment == '':
-                yield None
-            else:
-                yield segment
+            yield segment
+
+    def get_window(self, packets, wnd_size):
+        """ Modify the sending window of self by adding
+        packets until the sending buffer is full. Will not
+        overwrite existing packets in the buffer. """
+        while len(self.wnd) < wnd_size:
+            try:
+                self.wnd.append(packets.next())
+            except StopIteration:
+                break
 
     def handle_timeout(self):
         pass
