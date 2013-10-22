@@ -57,12 +57,12 @@ class Sender(BasicSender.BasicSender):
         # Grab the first window of packets to send
         self.get_window(packets, windowsize)
 
+        # Send the first window
+        for packet in self.wnd:
+            self.send(packet)
+
         # Main sending/receiving loop
         while True:
-
-            # Send the whole window
-            for packet in self.wnd:
-                self.send(packet)
 
             # Wait to hear back from receiver. If receiver sends ack,
             # set appropriate flag in acked to True
@@ -72,26 +72,37 @@ class Sender(BasicSender.BasicSender):
                 # If we do get an ack, make sure it is not corrupted.
                 if response and Checksum.validate_checksum(response):
                     ackno = int(self.split_packet(response)[1])
+
+                    # This means a packet was dropped. Resend the window by exiting the response loop.
+                    if ackno == self.seqno:
+                        break
+
+                    # Mark all packets up to acked packet as True
                     for j in range(0, ackno):
                         acked[j] = True
-                    
 
-            # Delete in order acked packets from the window
-            # to make room for more packets to fill the buffer
-            for i in range(self.seqno, len(acked.keys())):
-                if acked[i]:
-                    self.wnd.pop(0)
-                    self.seqno += 1
+                    # Delete in order acked packets from the window
+                    # to make room for more packets to fill the buffer
+                    for i in range(self.seqno, ackno):
+                        if acked[i]:
+                            self.wnd.pop(0)
+                            self.seqno += 1
+                        else:
+                            break
                 else:
+                    # Got a timeout for a packet, resend the window by exiting the response loop.
                     break
 
             # Refresh the window
             self.get_window(packets, windowsize)
-            # pdb.set_trace()
 
             # If no packets left, we're done
             if not self.wnd:
                 break
+
+            # Send a new window
+            for packet in self.wnd:
+                self.send(packet)
 
         # Reset seqno and exit loop
         self.seqno = 0
