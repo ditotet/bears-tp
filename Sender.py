@@ -1,6 +1,5 @@
 import sys
 import getopt
-import cStringIO
 import time
 import random
 import pdb
@@ -16,7 +15,7 @@ class Sender(BasicSender.BasicSender):
     def __init__(self, dest, port, filename, debug=False):
         super(Sender, self).__init__(dest, port, filename, debug)
         self.max_data_size = 1372
-        self.windowsize = 3
+        self.windowsize = 5
         self.timeout = 0.5
         self.seqno = 0
         self.wnd = []
@@ -25,16 +24,17 @@ class Sender(BasicSender.BasicSender):
     def start(self):
         """ Send a file or get input from stdin. Send all data
         in order, reliably to receiver. """
-        end_transmission = False
-        while not end_transmission:
-            
-            end_transmission = self.handle_file(self.infile) \
-            if filename and self.infile else self.handle_stdin()
+        self.handle_file(self.infile) if filename else self.handle_stdin()
+        # end_transmission = False
+        # while not end_transmission:
+        #     end_transmission = self.handle_file(self.infile) if filename else self.handle_stdin()
+        #     # end_transmission = self.handle_file(open(self.filename)) \
+        #     # if filename and self.infile else self.handle_stdin()
                   
     def handle_file(self, infile):
         """ To send data from file included with -f flag in sysargs.
-        If data is fetched from stdin, it is converted to a file and
-        this function is called. """
+        If data is piped from stdin, this function is called once
+        it is determined stdin is nonempty. """
 
         # Initialize variables
         windowsize = self.windowsize
@@ -68,10 +68,13 @@ class Sender(BasicSender.BasicSender):
             # set appropriate flag in acked to True
             for packet in self.wnd:
                 response = self.receive(self.timeout)
-                if response:
+
+                # If we do get an ack, make sure it is not corrupted.
+                if response and Checksum.validate_checksum(response):
                     ackno = int(self.split_packet(response)[1])
                     for j in range(0, ackno):
                         acked[j] = True
+                    
 
             # Delete in order acked packets from the window
             # to make room for more packets to fill the buffer
@@ -85,6 +88,8 @@ class Sender(BasicSender.BasicSender):
             # Refresh the window
             self.get_window(packets, windowsize)
             # pdb.set_trace()
+
+            # If no packets left, we're done
             if not self.wnd:
                 break
 
@@ -94,28 +99,31 @@ class Sender(BasicSender.BasicSender):
 
     def handle_stdin(self):
         """ To send data that is input via stdin."""
-        msg = sys.stdin
-
+        # This is stdin
+        msg = self.infile
         # Check if stdin is empty, return 
         if not select.select([msg,],[],[],0.0)[0]:
             return True
-
-        # If stdin is not a file that can be read, coerce it to a StringIO object 
-        msg = cStringIO.StringIO(msg) if msg and not hasattr(msg, 'read') else msg
-
         # Pass the buck to handle_file
         self.handle_file(msg)
-
-        # Make sure to return True or we'll loop forever
-        return True
 
     def initiate_connection(self, start_packet):
         """ Send a start packet and wait to hear back from
         receiver before sending more packets."""
+        def conn_established(response):
+            """ Helper. Checks if the ack packet is not 
+            corrupted and that the seqno in the ack is 
+            the next seqno."""
+            return response and \
+            Checksum.validate_checksum(response) and \
+            int(self.split_packet(response)[1]) == self.seqno + 1
+
+        # Loop until connection is established
         while self.seqno == 0:
             self.send(start_packet)
             response = self.receive(self.timeout)
-            if response:
+            # Ensure the connection is properly established.
+            if conn_established(response):
                 self.seqno += 1
 
     def get_packets(self, segments, seqno=0):

@@ -17,8 +17,10 @@ forwarder, so they will magically be run.
 def tests_to_run(forwarder):
     from tests import BasicTest, RandomDropTest
     # BasicTest.BasicTest(forwarder, "README")
+    BasicTest.BasicTest(forwarder, "Dropbox.m4a")
     # RandomDropTest.RandomDropTest(forwarder, "smallfile")
-    RandomDropTest.RandomDropTest(forwarder, "README")
+    # RandomDropTest.RandomDropTest(forwarder, "README")
+    # RandomDropTest.RandomDropTest(forwarder, "Dropbox.m4a")
 
 """
 Testing is divided into two pieces: this forwarder and a set of test cases in
