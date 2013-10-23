@@ -43,7 +43,7 @@ class Connection():
         self.outfile.close()
 
 class Receiver():
-    def __init__(self,listenport=33122,debug=False,timeout=100):
+    def __init__(self,listenport=33122,debug=False,timeout=10):
         self.debug = debug
         self.timeout = timeout
         self.last_cleanup = time.time()

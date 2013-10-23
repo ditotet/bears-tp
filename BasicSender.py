@@ -21,6 +21,8 @@ class BasicSender(object):
         else:
             self.infile = open(filename,"r")
 
+        self.packets_sent = 0
+
     # Waits until packet is received to return.
     def receive(self, timeout=None):
         self.sock.settimeout(timeout)
@@ -34,6 +36,8 @@ class BasicSender(object):
         if address is None:
             address = (self.dest,self.dport)
         self.sock.sendto(message, address)
+
+        self.packets_sent += 1
 
     # Prepares a packet
     def make_packet(self,msg_type,seqno,msg):

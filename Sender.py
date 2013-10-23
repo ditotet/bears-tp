@@ -16,6 +16,7 @@ class Sender(BasicSender.BasicSender):
         super(Sender, self).__init__(dest, port, filename, debug)
         self.max_data_size = 1372
         self.windowsize = 5
+        self.connectiontimeout = 10
         self.timeout = 0.5
         self.seqno = 0
         self.wnd = []
@@ -25,6 +26,8 @@ class Sender(BasicSender.BasicSender):
         """ Send a file or get input from stdin. Send all data
         in order, reliably to receiver. """
         self.handle_file(self.infile) if filename else self.handle_stdin()
+
+        print("Packets sent: " + str(self.packets_sent))
                   
     def handle_file(self, infile):
         """ To send data from file included with -f flag in sysargs.
@@ -46,15 +49,24 @@ class Sender(BasicSender.BasicSender):
 
         # Attempt to establish a connection...
         start_packet = packets.next()
-        self.initiate_connection(start_packet)
+        if not self.initiate_connection(start_packet):
+            return
         acked[0] = True
         # Connection established!
 
-        # Grab the first window of packets to send. (Assigns it to self.wnd)
-        self.get_window(packets, windowsize)
+        # Start sending all of the packets until there are none left.
+        # |
+        # v
 
         # Main sending/receiving loop
         while True:
+
+            # Refresh the window
+            self.get_window(packets, windowsize)
+
+            # If no packets left, we're done
+            if not self.wnd:
+                break
 
             # Send a window
             for packet in self.wnd:
@@ -69,18 +81,22 @@ class Sender(BasicSender.BasicSender):
                 if response and Checksum.validate_checksum(response):
                     ackno = int(self.split_packet(response)[1])
 
-                    # This means a packet was dropped.
+                    # This timer is to make sure the connection to the receiver has not been lost.
+                    connectiontimer = time.time()
+
+                    # This means a previous packet was dropped.
                     if ackno == self.seqno:
                         # keep track of how many dupacks weve gotten
                         dupacks += 1
-                        # We should resize our window and resend it by exiting the loop
+                        # We should resize our window and resend the first packet in buffer.
                         if dupacks > 2:
-                            dupacks = 0
-                            break
-                        else:
-                            # Just send the packet the receiver is asking for
+                            windowsize -= 1
+                            windowsize = max(1, windowsize)
                             self.send(self.wnd[0]) if self.wnd else None
                     else:
+
+                        # Got the correct ack, reset dupacks.
+                        dupacks = 0
 
                         # Mark all packets up to acked packet as True
                         for j in range(self.seqno, ackno):
@@ -92,30 +108,39 @@ class Sender(BasicSender.BasicSender):
                             if acked[i]:
                                 self.wnd.pop(0)
                                 self.seqno += 1
+
+                                # were doing good, increase the size of the window
+                                windowsize += 1
+                                windowsize = min(windowsize, self.windowsize)
                         
-                                # refresh the window and send the newly buffered packet.                                
+                                # refresh the window and send the newly buffered packets. 
+                                prev_windowsize = len(self.wnd)                               
                                 self.get_window(packets,windowsize)
-                                try:
-                                    self.send(self.wnd[-1])
-                                except IndexError:
-                                    pass
+                                for i in range(prev_windowsize, len(self.wnd)):
+                                    self.send(self.wnd[i])
                             else:
                                 break
 
+                # Corrupted packet. Ignore.
+                elif response and not Checksum.validate_checksum(response):
+                    print("Corrupted packet..")
+                    pass
+
                 else:
-                    # Got a timeout for a packet, resend the window by exiting the response loop.
+                    # Timeout. Exit receive loop.
+
+                    # Havent heard back from the receiver for connection timeout seconds.
+                    # Safe to assume connection has been lost.
+                    if time.time() - connectiontimer > self.connectiontimeout:
+                        print("connection lost.")
+                        return
+
+                    # Decrement window size and exit loop in order to send the whole window again
+                    windowsize -= 1
                     break
 
-            # Refresh the window
-            self.get_window(packets, windowsize)
-
-            # If no packets left, we're done
-            if not self.wnd:
-                break
-
-        # Reset seqno and exit loop
-        self.seqno = 0
-        return True
+        # Done.
+        return
 
     def handle_stdin(self):
         """ To send data that is input via stdin."""
@@ -138,6 +163,8 @@ class Sender(BasicSender.BasicSender):
             Checksum.validate_checksum(response) and \
             int(self.split_packet(response)[1]) == self.seqno + 1
 
+        connectiontimer = time.time()
+
         # Loop until connection is established
         while self.seqno == 0:
             self.send(start_packet)
@@ -145,6 +172,13 @@ class Sender(BasicSender.BasicSender):
             # Ensure the connection is properly established.
             if conn_established(response):
                 self.seqno += 1
+
+            # Could not establish a connection.
+            if time.time() - connectiontimer > self.connectiontimeout:
+                print("Cannot establish connection to Receiver.")
+                return False
+
+        return True
 
     def get_packets(self, segments, seqno=0):
         """ Yield the packets, in order with appropriate 
