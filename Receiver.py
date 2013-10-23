@@ -32,7 +32,6 @@ class Connection():
 
         if self.debug:
             print "next seqno should be %d" % (self.current_seqno+1)
-        print(self.current_seqno+1, res_data)
         # note: we return the /next/ sequence number we're expecting
         return self.current_seqno+1, res_data
 
@@ -177,7 +176,7 @@ if __name__ == "__main__":
         exit()
 
     port = 33122
-    debug = True
+    debug = False
     timeout = 10
 
     for o,a in opts:

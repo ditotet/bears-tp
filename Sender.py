@@ -25,11 +25,6 @@ class Sender(BasicSender.BasicSender):
         """ Send a file or get input from stdin. Send all data
         in order, reliably to receiver. """
         self.handle_file(self.infile) if filename else self.handle_stdin()
-        # end_transmission = False
-        # while not end_transmission:
-        #     end_transmission = self.handle_file(self.infile) if filename else self.handle_stdin()
-        #     # end_transmission = self.handle_file(open(self.filename)) \
-        #     # if filename and self.infile else self.handle_stdin()
                   
     def handle_file(self, infile):
         """ To send data from file included with -f flag in sysargs.
@@ -38,6 +33,7 @@ class Sender(BasicSender.BasicSender):
 
         # Initialize variables
         windowsize = self.windowsize
+        dupacks = 0
 
         # Initialize the generators that will yield the packets...
         segments = self.segment_data(infile, self.max_data_size)
@@ -54,41 +50,58 @@ class Sender(BasicSender.BasicSender):
         acked[0] = True
         # Connection established!
 
-        # Grab the first window of packets to send
+        # Grab the first window of packets to send. (Assigns it to self.wnd)
         self.get_window(packets, windowsize)
-
-        # Send the first window
-        for packet in self.wnd:
-            self.send(packet)
 
         # Main sending/receiving loop
         while True:
 
+            # Send a window
+            for packet in self.wnd:
+                self.send(packet)
+
             # Wait to hear back from receiver. If receiver sends ack,
             # set appropriate flag in acked to True
-            for packet in self.wnd:
+            while True:
                 response = self.receive(self.timeout)
 
                 # If we do get an ack, make sure it is not corrupted.
                 if response and Checksum.validate_checksum(response):
                     ackno = int(self.split_packet(response)[1])
 
-                    # This means a packet was dropped. Resend the window by exiting the response loop.
+                    # This means a packet was dropped.
                     if ackno == self.seqno:
-                        break
-
-                    # Mark all packets up to acked packet as True
-                    for j in range(0, ackno):
-                        acked[j] = True
-
-                    # Delete in order acked packets from the window
-                    # to make room for more packets to fill the buffer
-                    for i in range(self.seqno, ackno):
-                        if acked[i]:
-                            self.wnd.pop(0)
-                            self.seqno += 1
-                        else:
+                        # keep track of how many dupacks weve gotten
+                        dupacks += 1
+                        # We should resize our window and resend it by exiting the loop
+                        if dupacks > 2:
+                            dupacks = 0
                             break
+                        else:
+                            # Just send the packet the receiver is asking for
+                            self.send(self.wnd[0]) if self.wnd else None
+                    else:
+
+                        # Mark all packets up to acked packet as True
+                        for j in range(self.seqno, ackno):
+                            acked[j] = True
+
+                        # Delete in order acked packets from the window
+                        # to make room for more packets to fill the buffer
+                        for i in range(self.seqno, ackno):
+                            if acked[i]:
+                                self.wnd.pop(0)
+                                self.seqno += 1
+                        
+                                # refresh the window and send the newly buffered packet.                                
+                                self.get_window(packets,windowsize)
+                                try:
+                                    self.send(self.wnd[-1])
+                                except IndexError:
+                                    pass
+                            else:
+                                break
+
                 else:
                     # Got a timeout for a packet, resend the window by exiting the response loop.
                     break
@@ -99,10 +112,6 @@ class Sender(BasicSender.BasicSender):
             # If no packets left, we're done
             if not self.wnd:
                 break
-
-            # Send a new window
-            for packet in self.wnd:
-                self.send(packet)
 
         # Reset seqno and exit loop
         self.seqno = 0
