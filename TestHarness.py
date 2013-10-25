@@ -18,13 +18,14 @@ def tests_to_run(forwarder):
 	from tests import BasicTest, RandomDropTest, CorruptTest, DupAcks
 	BasicTest.BasicTest(forwarder, "lorem-ipsum.txt")
 	RandomDropTest.RandomDropTest(forwarder, "lorem-ipsum.txt")
-	RandomDropTest.RandomDropTest(forwarder, "README")
-	RandomDropTest.RandomDropTest(forwarder, "DSC_0122.JPG")
-	RandomDropTest.RandomDropTest(forwarder, "IMG_0334.JPG")
-	RandomDropTest.RandomDropTest(forwarder, "Dropbox.m4a")
+	# RandomDropTest.RandomDropTest(forwarder, "README")
+	# RandomDropTest.RandomDropTest(forwarder, "DSC_0122.JPG")
+	# RandomDropTest.RandomDropTest(forwarder, "IMG_0334.JPG")
+	# RandomDropTest.RandomDropTest(forwarder, "Dropbox.m4a")
 	CorruptTest.CorruptTest(forwarder, "Dropbox.m4a")
-	DupAcks.DupAcks(forwarder, "Dropbox.m4a")
-	DupAcks.DupAcks(forwarder, "DSC_0122.JPG")
+	# DupAcks.DupAcks(forwarder, "Dropbox.m4a")
+	# DupAcks.DupAcks(forwarder, "DSC_0122.JPG")
+	# DupAcks.DupAcks(forwarder, "lorem-ipsum.txt")
 
 
 """
