@@ -12,7 +12,6 @@ create your own.
 """
 class RandomDropTest(BasicTest):
     def handle_packet(self):
-        #random.seed(25)
         for p in self.forwarder.in_queue:
             if random.choice([True, False]):
                 self.forwarder.out_queue.append(p)

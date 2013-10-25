@@ -2,8 +2,6 @@ import sys
 import getopt
 import time
 import random
-import pdb
-import select
 import os
 import math
 
@@ -24,6 +22,7 @@ class Sender(BasicSender.BasicSender):
         self.seqno = 0
         self.wnd = []
         self.filename = filename
+        self.dupacks = 0
 
     # Main sending loop.
     def start(self):
@@ -33,8 +32,6 @@ class Sender(BasicSender.BasicSender):
         self.lastseqno = math.ceil(os.path.getsize(filename)/1372)
         # if no file or stdin, exit
         if not self.filename:
-            return
-        if not select.select([msg,],[],[],0.0)[0]:
             return
         # turn file into packet generator
         packets = self.get_packets(msg)
@@ -120,6 +117,12 @@ class Sender(BasicSender.BasicSender):
         except ValueError:
             return False
 
+        # keep track of dupacks to resend lost packet(s)
+        if ackno == minack:
+            self.dupacks += 1
+        else:
+            self.dupacks = 0
+
         # make sure checksum is valid, and the ackno is in the sequence of acknos we are expecting
         return Checksum.validate_checksum(resp) and ackno > minack and ackno <= maxack
      
@@ -179,6 +182,11 @@ class Sender(BasicSender.BasicSender):
 
     def handle_new_ack(self, ack, packets):
         ackno = int(self.split_packet(ack)[1])
+        
+        # three dupacks, resend the first packet in the buffer
+        if self.dupacks > 2:
+            self.send(self.wnd[0])
+            return
 
         # reset seqno; packet(s) acknowledged
         for i in range(self.seqno, ackno):
