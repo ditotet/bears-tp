@@ -22,10 +22,10 @@ def tests_to_run(forwarder):
 	# RandomDropTest.RandomDropTest(forwarder, "DSC_0122.JPG")
 	# RandomDropTest.RandomDropTest(forwarder, "IMG_0334.JPG")
 	# RandomDropTest.RandomDropTest(forwarder, "Dropbox.m4a")
-	CorruptTest.CorruptTest(forwarder, "Dropbox.m4a")
+	CorruptTest.CorruptTest(forwarder, "IMG_0444.JPG")
 	# DupAcks.DupAcks(forwarder, "Dropbox.m4a")
 	# DupAcks.DupAcks(forwarder, "DSC_0122.JPG")
-	# DupAcks.DupAcks(forwarder, "lorem-ipsum.txt")
+	DupAcks.DupAcks(forwarder, "lorem-ipsum.txt")
 
 
 """

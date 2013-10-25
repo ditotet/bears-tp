@@ -29,10 +29,10 @@ class Sender(BasicSender.BasicSender):
         """ Send a file or get input from stdin. Send all data
         in order, reliably to receiver. """
         msg = self.infile
-        self.lastseqno = math.ceil(os.path.getsize(filename)/1372)
         # if no file or stdin, exit
         if not self.filename:
             return
+        self.lastseqno = math.ceil(os.path.getsize(filename)/self.max_data_size)
         # turn file into packet generator
         packets = self.get_packets(msg)
         
@@ -76,6 +76,14 @@ class Sender(BasicSender.BasicSender):
                 if self.checkresponse(response, self.seqno, self.seqno + len(self.wnd)):
                     # ack is valid, update seqno, buffer new packets, send newly buffered packets
                     self.handle_new_ack(response, packets)
+
+                # if window is empty, we exit the loop
+                if not self.wnd:
+                    break
+
+                # three dupacks, resend the first packet in the buffer
+                if self.dupacks > 2:
+                    self.send(self.wnd[0])
                     
     def initiate_connection(self, start_packet):
         """ Send a start packet and wait to hear back from
@@ -182,11 +190,6 @@ class Sender(BasicSender.BasicSender):
 
     def handle_new_ack(self, ack, packets):
         ackno = int(self.split_packet(ack)[1])
-        
-        # three dupacks, resend the first packet in the buffer
-        if self.dupacks > 2:
-            self.send(self.wnd[0])
-            return
 
         # reset seqno; packet(s) acknowledged
         for i in range(self.seqno, ackno):
