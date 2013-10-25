@@ -4,6 +4,8 @@ import time
 import random
 import pdb
 import select
+import os
+import math
 
 import Checksum
 import BasicSender
@@ -16,152 +18,65 @@ class Sender(BasicSender.BasicSender):
         super(Sender, self).__init__(dest, port, filename, debug)
         self.max_data_size = 1372
         self.windowsize = 5
+        self.max_window_size = 5
         self.connectiontimeout = 10
         self.timeout = 0.5
         self.seqno = 0
         self.wnd = []
+        self.filename = filename
 
     # Main sending loop.
     def start(self):
         """ Send a file or get input from stdin. Send all data
         in order, reliably to receiver. """
-        self.handle_file(self.infile) if filename else self.handle_stdin()
-
-        print("Packets sent: " + str(self.packets_sent))
-                  
-    def handle_file(self, infile):
-        """ To send data from file included with -f flag in sysargs.
-        If data is piped from stdin, this function is called once
-        it is determined stdin is nonempty. """
-
-        # Initialize variables
-        windowsize = self.windowsize
-        dupacks = 0
-
-        # Initialize the generators that will yield the packets...
-        segments = self.segment_data(infile, self.max_data_size)
-        packets = self.get_packets(segments)
-
-        # To keep track of which packets get acked
-        acked = {}
-        for i in range(self.seqno, self.seqno + len(self.wnd)):
-            acked[i] = False
-
-        # Attempt to establish a connection...
-        start_packet = packets.next()
-        if not self.initiate_connection(start_packet):
+        msg = self.infile
+        # if no file or stdin, exit
+        if not self.filename:
             return
-        acked[0] = True
-        # Connection established!
-
-        # Start sending all of the packets until there are none left.
-        # |
-        # v
-
-        # Main sending/receiving loop
+        if not select.select([msg,],[],[],0.0)[0]:
+            return
+        # turn file into packet generator
+        packets = self.get_packets(msg)
+        
+        self.lastseqno = math.ceil(os.path.getsize(filename)/1372)
+        
+        # start packet
+        startpacket = packets.next()
+        
+        # exit on failure to establish connection
+        if not self.initiate_connection(startpacket):
+            return
+        
+        # connection has been established
+        connectiontimer = time.time()
+        
         while True:
-
-            # Refresh the window
-            self.get_window(packets, windowsize)
-
-            # If no packets left, we're done
+            self.get_window(packets, self.windowsize)
             if not self.wnd:
+                # no more packets to send
                 break
-
-            # Send a window
             for packet in self.wnd:
                 self.send(packet)
-
-            # Wait to hear back from receiver. If receiver sends ack,
-            # set appropriate flag in acked to True
+                
+            # wait for response
             while True:
                 response = self.receive(self.timeout)
-
-                # If we do get an ack, make sure it is not corrupted.
-                if response and Checksum.validate_checksum(response):
-                    ackno = int(self.split_packet(response)[1])
-
-                    # This timer is to make sure the connection to the receiver has not been lost.
-                    connectiontimer = time.time()
-
-                    # This means a previous packet was dropped.
-                    if ackno == self.seqno:
-                        # keep track of how many dupacks weve gotten
-                        dupacks += 1
-                        # We should resize our window and resend the first packet in buffer.
-                        if dupacks > 2:
-                            windowsize -= 1
-                            windowsize = max(1, windowsize)
-                            self.send(self.wnd[0]) if self.wnd else None
-                    else:
-
-                        # Got the correct ack, reset dupacks.
-                        dupacks = 0
-
-                        # Mark all packets up to acked packet as True
-                        for j in range(self.seqno, ackno):
-                            acked[j] = True
-
-                        # Delete in order acked packets from the window
-                        # to make room for more packets to fill the buffer
-                        for i in range(self.seqno, ackno):
-                            if acked[i]:
-                                self.wnd.pop(0)
-                                self.seqno += 1
-
-                                # were doing good, increase the size of the window
-                                windowsize += 1
-                                windowsize = min(windowsize, self.windowsize)
-                        
-                                # refresh the window and send the newly buffered packets. 
-                                prev_windowsize = len(self.wnd)                               
-                                self.get_window(packets,windowsize)
-                                for i in range(prev_windowsize, len(self.wnd)):
-                                    self.send(self.wnd[i])
-                            else:
-                                break
-
-                # Corrupted packet. Ignore.
-                elif response and not Checksum.validate_checksum(response):
-                    print("Corrupted packet..")
-                    pass
-
-                else:
-                    # Timeout. Exit receive loop.
-
-                    # Havent heard back from the receiver for connection timeout seconds.
-                    # Safe to assume connection has been lost.
-                    if time.time() - connectiontimer > self.connectiontimeout:
-                        print("connection lost.")
+                if not response:
+                    # connection lost
+                    if time.time() > connectiontimer + self.connectiontimeout:
                         return
-
-                    # Decrement window size and exit loop in order to send the whole window again
-                    windowsize -= 1
+                    # packet timeout
                     break
-
-        # Done.
-        return
-
-    def handle_stdin(self):
-        """ To send data that is input via stdin."""
-        # This is stdin
-        msg = self.infile
-        # Check if stdin is empty, return 
-        if not select.select([msg,],[],[],0.0)[0]:
-            return True
-        # Pass the buck to handle_file
-        self.handle_file(msg)
-
+                else:
+                    connectiontimer = time.time()
+                    
+                if self.checkresponse(response, self.seqno, self.seqno + len(self.wnd)):
+                    self.handle_new_ack(response)
+                    
     def initiate_connection(self, start_packet):
         """ Send a start packet and wait to hear back from
-        receiver before sending more packets."""
-        def conn_established(response):
-            """ Helper. Checks if the ack packet is not 
-            corrupted and that the seqno in the ack is 
-            the next seqno."""
-            return response and \
-            Checksum.validate_checksum(response) and \
-            int(self.split_packet(response)[1]) == self.seqno + 1
+        receiver before sending more packets. Returns true if a connection is 
+        initiated, returns false otherwise"""
 
         connectiontimer = time.time()
 
@@ -169,27 +84,62 @@ class Sender(BasicSender.BasicSender):
         while self.seqno == 0:
             self.send(start_packet)
             response = self.receive(self.timeout)
-            # Ensure the connection is properly established.
-            if conn_established(response):
-                self.seqno += 1
 
+            # Ensure the connection is properly established.
+            if self.checkresponse(response):
+                self.seqno += 1
+                
             # Could not establish a connection.
             if time.time() - connectiontimer > self.connectiontimeout:
-                print("Cannot establish connection to Receiver.")
+                #print("Cannot establish connection to Receiver.")
                 return False
 
         return True
 
-    def get_packets(self, segments, seqno=0):
+    def checkresponse(self, resp, minack= 0, maxack= 1):
+        """ Helper. Checks if the ack packet is not 
+        corrupted and that the seqno in the ack is 
+        the next seqno. Also checks if resp is null or Ack is non-int."""
+        if not resp:
+            return False
+        
+        spacket = self.split_packet(resp)
+        
+        msg_type, ackno = spacket[0], spacket[1]
+        
+        if msg_type != 'ack': 
+            return False
+        
+        ackno = spacket[1]
+        #if ackno is not an int, exit
+        try:
+            ackno = int(ackno)
+        except ValueError:
+            return False
+        return Checksum.validate_checksum(resp) and ackno > minack and ackno <= maxack
+     
+    def get_packets(self, infile, seqno=0):
         """ Yield the packets, in order with appropriate 
         flags for start, data, end. If all data fits in 
         start packet, there is no data packet."""
+        def segment_data(msg, seg_size):
+            """ 
+            To deal with data larger than the max packet size,
+            we take in the original message, and return a 
+            generator to yield segments of size seg_size.
+            """
+            segment = None
+            while segment != '':
+                segment = bytes(msg.read(seg_size))
+                yield segment
+
         msg_type = 'start'
+        segments = segment_data(infile, self.max_data_size)
         seg_buffer = [segments.next(), segments.next()]
         packet = self.make_packet(msg_type, seqno, seg_buffer.pop(0))
         yield packet
         seqno += 1
-        if seg_buffer[0] is not '':
+        if seg_buffer[0] != '':
             seg_buffer.append(segments.next())
             msg_type = 'data'
             while seg_buffer[1] != '':
@@ -201,16 +151,6 @@ class Sender(BasicSender.BasicSender):
         packet = self.make_packet(msg_type, seqno, seg_buffer.pop(0))
         yield packet
 
-    def segment_data(self, msg, seg_size):
-        """ 
-        To deal with data larger than the max packet size,
-        we take in the original message, and return a 
-        generator to yield segments of size seg_size.
-        """
-        segment = None
-        while segment is not '':
-            segment = bytes(msg.read(seg_size))
-            yield segment
 
     def get_window(self, packets, wnd_size):
         """ Modify the sending window of self by adding
@@ -226,7 +166,19 @@ class Sender(BasicSender.BasicSender):
         pass
 
     def handle_new_ack(self, ack):
-        pass
+        # ack is valid
+        ackno = int(self.split_packet(ack)[1])
+        
+        # reset seqno; packet(s) acknowledged
+        for i in range(self.seqno, ackno):
+            self.wnd.pop(0)
+        self.seqno = ackno
+        
+        prevwindowsize = len(self.wnd)
+        # refresh window and send newly buffered packets
+        self.get_window(packets, self.windowsize)
+        for i in range(prevwindowsize, len(self.wnd)):
+            self.send(self.wnd[i])
 
     def handle_dup_ack(self, ack):
         pass
