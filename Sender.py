@@ -30,6 +30,7 @@ class Sender(BasicSender.BasicSender):
         """ Send a file or get input from stdin. Send all data
         in order, reliably to receiver. """
         msg = self.infile
+        self.lastseqno = math.ceil(os.path.getsize(filename)/1372)
         # if no file or stdin, exit
         if not self.filename:
             return
@@ -38,23 +39,28 @@ class Sender(BasicSender.BasicSender):
         # turn file into packet generator
         packets = self.get_packets(msg)
         
-        self.lastseqno = math.ceil(os.path.getsize(filename)/1372)
-        
-        # start packet
+        # get start packet
         startpacket = packets.next()
         
         # exit on failure to establish connection
         if not self.initiate_connection(startpacket):
             return
-        
         # connection has been established
+
+        # set timer to keep track of when we hear from receiver
         connectiontimer = time.time()
         
+        # main sending/receiving loop
         while True:
+
+            # refresh the buffer
             self.get_window(packets, self.windowsize)
+
+            # if window is empty, we exit the loop
             if not self.wnd:
-                # no more packets to send
                 break
+
+            # send a window of packets to receiver
             for packet in self.wnd:
                 self.send(packet)
                 
@@ -71,51 +77,50 @@ class Sender(BasicSender.BasicSender):
                     connectiontimer = time.time()
                     
                 if self.checkresponse(response, self.seqno, self.seqno + len(self.wnd)):
-                    self.handle_new_ack(response)
+                    # ack is valid, update seqno, buffer new packets, send newly buffered packets
+                    self.handle_new_ack(response, packets)
                     
     def initiate_connection(self, start_packet):
         """ Send a start packet and wait to hear back from
         receiver before sending more packets. Returns true if a connection is 
         initiated, returns false otherwise"""
-
+        # to keep track of when we started trying to initiate connection
         connectiontimer = time.time()
-
         # Loop until connection is established
         while self.seqno == 0:
             self.send(start_packet)
             response = self.receive(self.timeout)
-
             # Ensure the connection is properly established.
             if self.checkresponse(response):
                 self.seqno += 1
-                
             # Could not establish a connection.
-            if time.time() - connectiontimer > self.connectiontimeout:
-                #print("Cannot establish connection to Receiver.")
+            elif time.time() - connectiontimer > self.connectiontimeout:
+                # print "Cannot establish connection to Receiver"
                 return False
-
         return True
 
     def checkresponse(self, resp, minack= 0, maxack= 1):
         """ Helper. Checks if the ack packet is not 
         corrupted and that the seqno in the ack is 
         the next seqno. Also checks if resp is null or Ack is non-int."""
+        # response is nil, not a valid response
         if not resp:
             return False
-        
+        # get the pieces of the response packet
         spacket = self.split_packet(resp)
-        
         msg_type, ackno = spacket[0], spacket[1]
         
+        # msgs from receiver should only be of type 'ack'
         if msg_type != 'ack': 
             return False
-        
-        ackno = spacket[1]
+    
         #if ackno is not an int, exit
         try:
             ackno = int(ackno)
         except ValueError:
             return False
+
+        # make sure checksum is valid, and the ackno is in the sequence of acknos we are expecting
         return Checksum.validate_checksum(resp) and ackno > minack and ackno <= maxack
      
     def get_packets(self, infile, seqno=0):
@@ -132,12 +137,17 @@ class Sender(BasicSender.BasicSender):
             while segment != '':
                 segment = bytes(msg.read(seg_size))
                 yield segment
+            # end function segment_data
 
+        # create and yield the start packet
         msg_type = 'start'
         segments = segment_data(infile, self.max_data_size)
         seg_buffer = [segments.next(), segments.next()]
         packet = self.make_packet(msg_type, seqno, seg_buffer.pop(0))
         yield packet
+
+        # all other packets should be data packets. yield them.
+        # if all the data fit in the start packet, skip to end packet
         seqno += 1
         if seg_buffer[0] != '':
             seg_buffer.append(segments.next())
@@ -147,15 +157,17 @@ class Sender(BasicSender.BasicSender):
                 yield packet
                 seg_buffer.append(segments.next())
                 seqno += 1
+
+        # create and yield the end packet
         msg_type = 'end'
         packet = self.make_packet(msg_type, seqno, seg_buffer.pop(0))
         yield packet
-
 
     def get_window(self, packets, wnd_size):
         """ Modify the sending window of self by adding
         packets until the sending buffer is full. Will not
         overwrite existing packets in the buffer. """
+        # when there are no new packets left to send, return nil
         while len(self.wnd) < wnd_size:
             try:
                 self.wnd.append(packets.next())
@@ -165,10 +177,9 @@ class Sender(BasicSender.BasicSender):
     def handle_timeout(self):
         pass
 
-    def handle_new_ack(self, ack):
-        # ack is valid
+    def handle_new_ack(self, ack, packets):
         ackno = int(self.split_packet(ack)[1])
-        
+
         # reset seqno; packet(s) acknowledged
         for i in range(self.seqno, ackno):
             self.wnd.pop(0)
